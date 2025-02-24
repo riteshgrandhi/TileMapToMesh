@@ -29,7 +29,6 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
     )
 
     def execute(self, context):
-        print(f"Hello from {self.bl_idname} - rittu")
         tilemap = UTIL_OP_LoadTilemap.load_tilemap_file(context, self.filepath)
 
         tileset, img = self.load_texture_image(tilemap, self.filepath)
@@ -81,14 +80,21 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
                     material.node_tree.nodes.remove(node)
 
             emission_node = material.node_tree.nodes.new(type='ShaderNodeEmission')
+            transparent_node = material.node_tree.nodes.new(type='ShaderNodeBsdfTransparent')
+            mix_shader_node = material.node_tree.nodes.new(type='ShaderNodeMixShader')
             texture_node = material.node_tree.nodes.new("ShaderNodeTexImage")
+            invert_node = material.node_tree.nodes.new(type="ShaderNodeInvert")
 
             texture_node.image = img
             texture_node.interpolation = 'Closest' #pixel art filtering
 
             # Link nodes
+            material.node_tree.links.new(invert_node.inputs["Color"], texture_node.outputs["Alpha"])
             material.node_tree.links.new(emission_node.inputs["Color"], texture_node.outputs["Color"])
-            material.node_tree.links.new(output_node.inputs["Surface"], emission_node.outputs["Emission"])
+            material.node_tree.links.new(mix_shader_node.inputs[0], invert_node.outputs["Color"])
+            material.node_tree.links.new(mix_shader_node.inputs[1], emission_node.outputs["Emission"])
+            material.node_tree.links.new(mix_shader_node.inputs[2], transparent_node.outputs["BSDF"])
+            material.node_tree.links.new(output_node.inputs["Surface"], mix_shader_node.outputs["Shader"])
 
             return material
 
@@ -134,17 +140,9 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
         return verts_map.get((x, -y)) or verts_map.setdefault((x, -y), bm.verts.new((x * tile_size, -y * tile_size, 0)))
 
     def apply_uv_to_face(self, face: BMFace, uv_layer, tile_x: int, tile_y: int, tile_width: float, tile_height: float):
-        uvs = [
-            (tile_x * tile_width, 1 - (tile_y + 1) * tile_height),
-            ((tile_x + 1) * tile_width, 1 - (tile_y + 1) * tile_height),
-            ((tile_x + 1) * tile_width, 1 - tile_y * tile_height),
-            (tile_x * tile_width, 1 - tile_y * tile_height),
-        ]
-
         for i, loop in enumerate(face.loops):
             uv = (Vector((tile_x, tile_y)) + LOOP_OFFSET_DICT[i]) * Vector((tile_width, - tile_height)) + Vector((0, 1))
             loop[uv_layer].uv = uv
-            print(loop[uv_layer].uv)
 
 
 classes = (
