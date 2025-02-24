@@ -3,13 +3,16 @@ import bpy
 import pytmx
 import bmesh
 from bpy_extras.io_utils import ImportHelper
+from bmesh.types import BMesh, BMFace
+from bpy.types import Image
+from mathutils import Vector
 
-
-# class Utils:
-#     @staticmethod
-#     def get_key(x, y):
-#         return f"{x}_{y}"
-
+LOOP_OFFSET_DICT = {
+    0: Vector((0, 0)),
+    1: Vector((0, 1)),
+    2: Vector((1, 1)),
+    3: Vector((1, 0))
+}
 
 class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
     bl_idname = "tilemaputil.tilemap_load"
@@ -29,9 +32,11 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
         print(f"Hello from {self.bl_idname} - rittu")
         tilemap = UTIL_OP_LoadTilemap.load_tilemap_file(context, self.filepath)
 
-        obj = self.create_mesh_object(tilemap)
+        tileset, img = self.load_texture_image(tilemap, self.filepath)
 
-        mat = self.create_material(tilemap, self.filepath)
+        mat = self.create_material(tilemap, img)
+        
+        obj = self.create_mesh_object(tilemap, tileset, img)
 
         # Assign material to object
         if obj.data.materials:
@@ -51,15 +56,16 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
         except FileNotFoundError:
             print(f"Error: File not found at {filepath}")
 
+
+    def load_texture_image(self, tilemap: pytmx.TiledMap, filepath):
+        # Get the texture path
+        tileset: pytmx.TiledTileset = tilemap.tilesets[0]
+        texture_path = bpy.path.abspath(os.path.join(os.path.dirname(filepath), tileset.source))
+        return tileset, bpy.data.images.load(texture_path)
+
     
-    def create_material(self, tilemap, filepath):
+    def create_material(self, tilemap, img):
         if tilemap.tilesets:
-            tileset = tilemap.tilesets[0]  # Assuming one tileset
-
-            # Get the texture path
-            texture_path = bpy.path.abspath(os.path.join(os.path.dirname(filepath), tileset.source))
-            # texture_path = bpy.path.abspath(tileset.source)
-
             # Create material
             material_name = "TilemapMaterial"
             material = bpy.data.materials.new(name=material_name)
@@ -77,7 +83,7 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
             emission_node = material.node_tree.nodes.new(type='ShaderNodeEmission')
             texture_node = material.node_tree.nodes.new("ShaderNodeTexImage")
 
-            texture_node.image = bpy.data.images.load(texture_path)
+            texture_node.image = img
             texture_node.interpolation = 'Closest' #pixel art filtering
 
             # Link nodes
@@ -87,23 +93,31 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
             return material
 
     
-    def create_mesh_object(self, tilemap, tile_size=1):
-        try:
+    def create_mesh_object(self, tilemap: pytmx.TiledMap, tileset: pytmx.TiledTileset, image: Image, tile_size=1):
+        try: 
             bm = bmesh.new()
 
             verts_map = {}  # Store vertices by their (x, y) coordinates
+
+            tile_width = tileset.tilewidth / image.size[0]
+            tile_height = tileset.tileheight / image.size[1]
+            columns = image.size[0] // tileset.tilewidth
+
+            uv_layer = bm.loops.layers.uv.verify()
 
             for layer in tilemap.visible_layers:
                 if isinstance(layer, pytmx.TiledTileLayer):
                     for x, y, gid in layer:
                         if gid:  # gid is 0 if no tile
-                            # Get or create vertices
-                            v1 = self.get_or_create_vert(tile_size, bm, verts_map, x, y)
-                            v2 = self.get_or_create_vert(tile_size, bm, verts_map, x + 1, y)
-                            v3 = self.get_or_create_vert(tile_size, bm, verts_map, x + 1, y + 1)
-                            v4 = self.get_or_create_vert(tile_size, bm, verts_map, x, y + 1)
+                            verts = [self.get_or_create_vert(tile_size, bm, verts_map, Vector((x, y)) + LOOP_OFFSET_DICT[i]) for i in range(4)]
+                            # face_map.setdefault((x, -y), bm.faces.new(verts))
+                            face = bm.faces.new(verts)
 
-                            bm.faces.new((v1, v2, v3, v4))
+                            local_gid = tilemap.tiledgidmap.get(gid) - tileset.firstgid
+                            tile_x = local_gid % columns
+                            tile_y = local_gid // columns
+                            self.apply_uv_to_face(face, uv_layer, tile_x, tile_y, tile_width, tile_height)
+
             mesh = bpy.data.meshes.new("TilemapMesh")
             bm.to_mesh(mesh)
             bm.free()
@@ -115,8 +129,23 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
         except Exception as e:
             print(f"An error occurred: {e}")
 
-    def get_or_create_vert(self, tile_size, bm, verts_map, x, y):
+    def get_or_create_vert(self, tile_size, bm: BMesh, verts_map, v: Vector):
+        x, y = v
         return verts_map.get((x, -y)) or verts_map.setdefault((x, -y), bm.verts.new((x * tile_size, -y * tile_size, 0)))
+
+    def apply_uv_to_face(self, face: BMFace, uv_layer, tile_x: int, tile_y: int, tile_width: float, tile_height: float):
+        uvs = [
+            (tile_x * tile_width, 1 - (tile_y + 1) * tile_height),
+            ((tile_x + 1) * tile_width, 1 - (tile_y + 1) * tile_height),
+            ((tile_x + 1) * tile_width, 1 - tile_y * tile_height),
+            (tile_x * tile_width, 1 - tile_y * tile_height),
+        ]
+
+        for i, loop in enumerate(face.loops):
+            uv = (Vector((tile_x, tile_y)) + LOOP_OFFSET_DICT[i]) * Vector((tile_width, - tile_height)) + Vector((0, 1))
+            loop[uv_layer].uv = uv
+            print(loop[uv_layer].uv)
+
 
 classes = (
     UTIL_OP_LoadTilemap,
