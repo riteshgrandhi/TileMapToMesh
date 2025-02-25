@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="right-down" width="4" height="4" tilewidth="32" tileheight="32" infinite="0" nextlayerid="3" nextobjectid="1">
+ <tileset firstgid="1" source="../../project-dwaraka-test-tiled/palm_tree_island.tsx"/>
+ <tileset firstgid="86" source="../../project-dwaraka-test-tiled/turner.tsx"/>
+ <tileset firstgid="87" source="../../project-dwaraka-test-tiled/chest.tsx"/>
+ <layer id="1" name="terrain" width="4" height="4">
+  <data encoding="csv">
+86,5,87,88,
+67,81,70,68,
+22,87,88,22,
+84,70,70,85
+</data>
+ </layer>
+</map>

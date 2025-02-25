@@ -49,21 +49,37 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
     tilemap: pytmx.TiledMap = None
 
     def execute(self, context):
-        self.tilemap = self.load_tilemap_file(self.filepath)  
+        try:
+            self.tilemap = self.load_tilemap_file(self.filepath)
+            self.create_material_for_tilesets()
+            self.create_objects_for_layers()
+            self.clean_up()
+            return {'FINISHED'}
+        except Exception as e:
+            print(e)
+            self.clean_up()
+            return {'CANCELLED'}
+        finally:
+            self.clean_up()
 
-        for tileset in self.tilemap.tilesets:
-            img = self.load_texture_image(tileset, self.filepath)
-            mat = self.create_material(tileset.name, img)
-            self.tileset_to_tiledata_dict.setdefault(tileset, TileData(material=mat, tileset=tileset, image=img))
 
+    def clean_up(self):
+        self.tilemap = None
+        self.gid_to_tiledata_dict.clear()
+        self.tileset_to_tiledata_dict.clear()
+
+
+    def create_objects_for_layers(self):
         for layer in self.tilemap.visible_layers:
             if isinstance(layer, pytmx.TiledTileLayer):
                 self.create_mesh_object(layer)
 
-        # bpy.context.view_layer.objects.active = obj
-        # obj.select_set(True)
 
-        return {'FINISHED'}
+    def create_material_for_tilesets(self):
+        for tileset in self.tilemap.tilesets:
+            img = self.load_texture_image(tileset, self.filepath)
+            mat = self.create_material(tileset.name, img)
+            self.tileset_to_tiledata_dict.setdefault(tileset, TileData(material=mat, tileset=tileset, image=img))
 
 
     def load_tilemap_file(self, filepath):
@@ -133,9 +149,10 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
 
                 if tiledata.material not in material_dict:
                     material_dict.setdefault(tiledata.material, index)
-                    face.material_index = material_dict.get(tiledata.material)
                     index += 1
-                
+
+                face.material_index = material_dict.get(tiledata.material)
+
                 local_gid = self.tilemap.tiledgidmap.get(gid) - tiledata.tileset.firstgid
                 self.apply_uv_to_face(face, uv_layer, local_gid, tiledata)
 
