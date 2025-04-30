@@ -11,12 +11,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-from . import tilemap_to_mesh_panel, load_tilemap
+from . import tilemap_to_mesh_panel, load_tilemap, load_ldtk
 
 # submodule
 submodules = (
     tilemap_to_mesh_panel,
     load_tilemap,
+    load_ldtk
 )
 
 def register():

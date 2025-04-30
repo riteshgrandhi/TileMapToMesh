@@ -33,8 +33,8 @@ class TileData:
 
 
 class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
-    bl_idname = "tilemaputil.tilemap_load"
-    bl_label = "Load Tilemap"
+    bl_idname = "tilemaputil.tilemap_loader"
+    bl_label = "Load Tilemap (.tmx)"
     bl_description = "load a tilemap"
 
     filter_glob: bpy.props.StringProperty(
@@ -195,20 +195,21 @@ class UTIL_OP_LoadTilemap(bpy.types.Operator, ImportHelper):
             loop[uv_layer].uv = uv
 
 
-classes = (
-    UTIL_OP_LoadTilemap,
-)
-
+def menu_func_import(self, context):
+    self.layout.operator(UTIL_OP_LoadTilemap.bl_idname, text=UTIL_OP_LoadTilemap.bl_label)
 
 def register():
-    for cl in classes:
-        bpy.utils.register_class(cl)
-
+    bpy.utils.register_class(UTIL_OP_LoadTilemap)
+    bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
 
 def unregister():
-    for cl in classes:
-        bpy.utils.unregister_class(cl)
+    bpy.utils.unregister_class(UTIL_OP_LoadTilemap)
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
+    # Unregister previous version if exists before registering
+    try:
+        unregister()
+    except Exception:
+        pass
     register()

@@ -14,7 +14,9 @@ class VIEW3D_PT_TileMapToMeshPanel(bpy.types.Panel):
 
         box = layout.box()
         box.label(text="Import Tile Map")
-        box.operator("tilemaputil.tilemap_load")
+        box.operator("tilemaputil.tilemap_loader")
+        box.label(text="Import Ldtk")
+        box.operator("tilemaputil.ldtk_loader")
 
 
 # module classes
