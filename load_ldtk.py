@@ -289,7 +289,7 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
                 mesh_name = f"{level_name}_{layer_identifier}"
                 mesh = bpy.data.meshes.new(mesh_name)
                 obj = bpy.data.objects.new(mesh_name, mesh)
-                # obj.location = (level_origin_x * scale, z_offset, -level_origin_y * scale) # Adjust Y for Blender's coordinate system
+                # obj.location = (level_origin_x, level_origin_y, z_offset)
                 level_collection.objects.link(obj) # Link object to the level's collection
 
                 bm = bmesh.new()
@@ -322,10 +322,10 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
                     # LDtk px is top-left corner, Y-down
                     # Blender object space is typically Y-up or Z-up, origin at center or corner
                     # Let's map LDtk X to Blender X, LDtk Y to Blender -Y, origin at LDtk's top-left
-                    v1_coord = (px[0] * scale / grid_size, -px[1] * scale / grid_size, 0)
-                    v2_coord = ((px[0] + tile_w) * scale / grid_size, -px[1] * scale / grid_size, 0)
-                    v3_coord = ((px[0] + tile_w) * scale / grid_size, -(px[1] + tile_h) * scale / grid_size, 0)
-                    v4_coord = (px[0] * scale / grid_size, -(px[1] + tile_h) * scale / grid_size, 0)
+                    v1_coord = ((px[0] + level_origin_x) * scale / grid_size, -(px[1] + level_origin_y) * scale / grid_size, z_offset)
+                    v2_coord = ((px[0] + tile_w + level_origin_x) * scale / grid_size, -(px[1] + level_origin_y) * scale / grid_size, z_offset)
+                    v3_coord = ((px[0] + tile_w + level_origin_x) * scale / grid_size, -(px[1] + tile_h + level_origin_y) * scale / grid_size, z_offset)
+                    v4_coord = ((px[0] + level_origin_x) * scale / grid_size, -(px[1] + tile_h + level_origin_y) * scale / grid_size, z_offset)
 
                     coords = [v1_coord, v2_coord, v3_coord, v4_coord]
                     verts = []
