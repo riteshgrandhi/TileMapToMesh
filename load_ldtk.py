@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 bl_info = {
-    "name": "Load LDtk Tilemap (.ldtk)",
+    "name": "Load LDtk Tilemap (.ldtk/.ldtkl)",
     "author": "Gemini Code Assist",
     "version": (1, 0),
     "blender": (3, 0, 0),  # Minimum Blender version
-    "location": "File > Import > LDtk Tilemap (.ldtk)",
-    "description": "Loads a tilemap from an LDtk file (.ldtk)",
+    "location": "File > Import > LDtk Tilemap (.ldtk/.ldtkl)",
+    "description": "Loads a tilemap from an LDtk file (.ldtk/.ldtkl)",
     "warning": "",
     "doc_url": "",
     "category": "Import-Export",
@@ -15,7 +15,6 @@ import bpy
 import bmesh
 import os
 import json
-import math
 from bpy_extras.io_utils import ImportHelper
 from mathutils import Vector
 
@@ -94,18 +93,92 @@ def create_tile_material(mat_name, image, operator):
     operator.report({'INFO'}, f"Created material: {mat_name}")
     return mat
 
+# --- Property Group for Layer Instance Selection (within a level) ---
+class LDtkLayerInstanceImportProperties(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty( # Layer instance identifier or type
+        name="Layer Instance Name",
+        description="Identifier of the layer instance or its type/definition"
+    )
+    instance_iid: bpy.props.StringProperty( # LDtk layer instance IID
+        name="Instance IID",
+        description="Unique IID of this layer instance in the LDtk project"
+    )
+    layer_def_uid: bpy.props.StringProperty( # Original Layer Definition UID
+        name="Layer Definition UID",
+        description="UID of the original layer definition"
+    )
+    import_layer: bpy.props.BoolProperty(
+        name="Import",
+        description="Import this layer instance",
+        default=True
+    )
+
+# --- Property Group for Level Selection ---
+class LDtkLevelImportProperties(bpy.types.PropertyGroup):
+    name: bpy.props.StringProperty( # Level identifier
+        name="Level Name",
+        description="Identifier of the level"
+    )
+    level_iid: bpy.props.StringProperty( # LDtk level IID
+        name="Level IID",
+        description="Original IID of the level in the LDtk project"
+    )
+    import_level: bpy.props.BoolProperty(
+        name="Import",
+        description="Import this level",
+        default=True
+    )
+    layer_instances: bpy.props.CollectionProperty(
+        type=LDtkLayerInstanceImportProperties,
+        name="Layer Instances in this Level"
+    )
+    # For UI state, to show/hide layer instances
+    show_layers: bpy.props.BoolProperty(
+        name="Show Layers",
+        description="Expand to show layer instances for this level",
+        default=True
+    )
+
+# --- Helper Operators for Layer Selection ---
+class LDtkSelectionHelperBase(bpy.types.Operator):
+    """Base class for selection helper operators."""
+    bl_idname = "tilemaputil.select_helper_base"
+    bl_label = "Selection Helper Base"
+    bl_options = {'INTERNAL'}
+
+    def get_main_operator(self, context):
+        if hasattr(context, 'space_data') and hasattr(context.space_data, 'operator'):
+            op = context.space_data.operator
+            if op and op.bl_idname == UTIL_OP_LoadLdtk.bl_idname:
+                return op
+        # Fallback for direct calls if needed, though less common for INTERNAL ops
+        if context.active_operator and context.active_operator.bl_idname == UTIL_OP_LoadLdtk.bl_idname:
+            return context.active_operator
+        return None
+
+    def invoke(self, context, event):
+        main_op = self.get_main_operator(context)
+        if not main_op:
+            self.report({'WARNING'}, "Main LDtk import operator not found.")
+            return {'CANCELLED'}
+        self.execute(context)
+        for area in context.screen.areas:
+            if area.type == 'FILE_BROWSER':
+                area.tag_redraw()
+                break
+        return {'FINISHED'}
 
 # --- Operator Class ---
 
 class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
-    """Loads a tilemap from an LDtk file (.ldtk)"""
+    """Loads a tilemap from an LDtk file (.ldtk/.ldtkl)"""
     bl_idname = "tilemaputil.ldtk_loader"
-    bl_label = "Load LDtk Tilemap (.ldtk)"
+    bl_label = "Load LDtk Tilemap (.ldtk/.ldtkl)"
     bl_options = {'REGISTER', 'UNDO'}
 
-    # Filter for .ldtk files
+    # Filter for .ldtk/.ldtkl files
     filter_glob: bpy.props.StringProperty(
-        default="*.ldtk",
+        default="*.ldtk;*.ldtkl",
         options={'HIDDEN'},
         maxlen=255,  # Max path length
     )
@@ -121,11 +194,91 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
     layer_separation: bpy.props.FloatProperty(
         name="Layer Separation (Z)",
         description="Distance between layers along the Z-axis",
-        default=0.01,
+        default=0.1,
         min=0.0,
     )
 
-    # Add more properties here if needed (e.g., import entities, etc.)
+    levels_to_import: bpy.props.CollectionProperty(
+        type=LDtkLevelImportProperties,
+        name="Levels to Import"
+    )
+    data_parsed_for_ui: bpy.props.BoolProperty(
+        default=False,
+        options={'HIDDEN'},
+        description="Internal: Whether levels and layers have been parsed from the current file for UI"
+    )
+    processed_filepath: bpy.props.StringProperty(
+        options={'HIDDEN'},
+        description="Internal: Path for which layers are currently loaded/processed"
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        layout.prop(self, "import_scale")
+        layout.prop(self, "layer_separation")
+
+        # Logic to update layer list if filepath changes
+        if self.filepath != self.processed_filepath:
+            self.levels_to_import.clear()
+            self.data_parsed_for_ui = False
+            self.processed_filepath = self.filepath
+
+            if self.filepath and os.path.exists(self.filepath):
+                try:
+                    with open(self.filepath, 'r', encoding='utf-8') as f:
+                        ldtk_data = json.load(f)
+
+                    if 'levels' in ldtk_data and ldtk_data['levels']:
+                        for level_data in ldtk_data['levels']:
+                            level_item = self.levels_to_import.add()
+                            level_item.name = level_data.get('identifier', f"Level_IID_{level_data.get('iid', 'UnknownIID')}")
+                            level_item.level_iid = level_data.get('iid', '')
+                            level_item.import_level = True
+                            level_item.show_layers = False # Default to collapsed
+
+                            level_item.layer_instances.clear()
+                            for layer_instance_data in level_data.get('layerInstances', []):
+                                layer_inst_item = level_item.layer_instances.add()
+                                layer_inst_item.name = layer_instance_data.get('__identifier', f"Type_{layer_instance_data.get('__type', 'UnknownType')}_DefUID_{layer_instance_data.get('layerDefUid','UnknownDef')}")
+                                layer_inst_item.instance_iid = layer_instance_data.get('iid', '')
+                                layer_inst_item.layer_def_uid = str(layer_instance_data.get('layerDefUid', ''))
+                                layer_inst_item.import_layer = True
+                        self.data_parsed_for_ui = True
+                    else:
+                        self.data_parsed_for_ui = False
+                except Exception as e:
+                    self.report({'WARNING'}, f"Error parsing LDtk for UI: {e}")
+                    self.data_parsed_for_ui = False
+            else:
+                self.data_parsed_for_ui = False
+
+        # Display layer selection UI
+        if self.data_parsed_for_ui and self.levels_to_import:
+            box = layout.box()
+            box.label(text="Levels and Layer Instances to Import:")
+
+            for level_item in self.levels_to_import:
+                level_box = box.box() # Box per level for visual grouping
+                header_row = level_box.row(align=True)
+                icon = 'TRIA_DOWN' if level_item.show_layers else 'TRIA_RIGHT'
+                header_row.prop(level_item, "show_layers", text="", icon=icon, emboss=False)
+                header_row.prop(level_item, "import_level", text="")
+                header_row.label(text=level_item.name)
+
+                if level_item.show_layers:
+                    layers_box = level_box.box()
+                    for layer_instance_item in level_item.layer_instances:
+                        layer_row = layers_box.row(align=True)
+                        layer_row.prop(layer_instance_item, "import_layer", text="")
+                        layer_row.label(text=f"  {layer_instance_item.name}") # Indent layer name
+
+        elif self.filepath and os.path.exists(self.filepath) and not self.data_parsed_for_ui:
+            layout.label(text=f"No levels/layers found or error parsing: {os.path.basename(self.filepath)}")
+        elif self.filepath and not os.path.exists(self.filepath):
+            layout.label(text="File not found. Please select a valid LDtk file.")
 
     def execute(self, context):
         filepath = self.filepath
@@ -140,6 +293,41 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
             return {'CANCELLED'}
 
         self.report({'INFO'}, f"Loading LDtk file: {filepath}")
+
+        # Fallback parsing if draw() didn't populate (e.g., script execution without UI)
+        if not self.data_parsed_for_ui and self.filepath and os.path.exists(self.filepath):
+            self.report({'INFO'}, "UI data not parsed, attempting fallback parsing for execute.")
+            self.levels_to_import.clear()
+            try:
+                with open(self.filepath, 'r', encoding='utf-8') as f:
+                    ldtk_data_check = json.load(f)
+                if 'levels' in ldtk_data_check and ldtk_data_check['levels']:
+                    for level_data_exec in ldtk_data_check['levels']:
+                        level_item_exec = self.levels_to_import.add()
+                        level_item_exec.name = level_data_exec.get('identifier', f"Level_IID_{level_data_exec.get('iid', 'UnknownIID')}")
+                        level_item_exec.level_iid = level_data_exec.get('iid', '')
+                        level_item_exec.import_level = True # Default to import
+
+                        level_item_exec.layer_instances.clear()
+                        for layer_inst_data_exec in level_data_exec.get('layerInstances', []):
+                            layer_inst_item_exec = level_item_exec.layer_instances.add()
+                            layer_inst_item_exec.name = layer_inst_data_exec.get('__identifier', f"Type_{layer_inst_data_exec.get('__type', 'UnknownType')}_DefUID_{layer_inst_data_exec.get('layerDefUid','UnknownDef')}")
+                            layer_inst_item_exec.instance_iid = layer_inst_data_exec.get('iid', '')
+                            layer_inst_item_exec.layer_def_uid = str(layer_inst_data_exec.get('layerDefUid', ''))
+                            layer_inst_item_exec.import_layer = True # Default to import
+                    self.data_parsed_for_ui = True # Mark as parsed for this context
+                else:
+                    self.data_parsed_for_ui = False
+            except Exception as e:
+                self.report({'WARNING'}, f"Fallback layer parsing failed: {e}")
+                self.data_parsed_for_ui = False
+
+        if not self.data_parsed_for_ui: # Check after potential fallback
+            self.report({'ERROR'}, f"Could not parse levels/layers from: {filepath}. Aborting.")
+            return {'CANCELLED'}
+        if not self.levels_to_import:
+            self.report({'INFO'}, "No levels found in LDtk file. Nothing to import.")
+            return {'FINISHED'}
 
         # --- Data Storage ---
         tileset_defs = {ts['uid']: ts for ts in ldtk_data['defs']['tilesets']}
@@ -194,11 +382,24 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
         z_offset = 0.0
 
         for level_idx, level_data in enumerate(ldtk_data.get('levels', [])):
+            level_iid = level_data.get('iid')
+            # Find this level in our selection list
+            level_import_settings = next((lvl for lvl in self.levels_to_import if lvl.level_iid == level_iid), None)
+
+            if not level_import_settings or not level_import_settings.import_level:
+                self.report({'INFO'}, f"Skipping level '{level_data.get('identifier', f'IID_{level_iid}')}' as it's not selected for import.")
+                continue
+
             level_name = level_data.get('identifier', f'Level_{level_idx}')
             self.report({'INFO'}, f"Processing {level_name} ({level_idx + 1}/{level_count})")
 
             level_origin_x = level_data.get('worldX', 0)
             level_origin_y = level_data.get('worldY', 0) # LDtk Y is down
+
+            # Create a dictionary for quick lookup of layer instance import settings for this level
+            current_level_layer_instance_settings = {
+                li.instance_iid: li for li in level_import_settings.layer_instances
+            }
 
             # Create a collection for the level
             level_collection = bpy.data.collections.new(level_name)
@@ -213,11 +414,19 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
             # LDtk layers are listed visually back-to-front, so reverse for Blender Z order
 
             for layer_instance in layer_instances:
+                layer_instance_iid = layer_instance.get('iid')
+                layer_instance_import_settings = current_level_layer_instance_settings.get(layer_instance_iid)
+
+                if not layer_instance_import_settings or not layer_instance_import_settings.import_layer:
+                    self.report({'INFO'}, f"Skipping layer instance '{layer_instance.get('__identifier', f'IID_{layer_instance_iid}')}' in level '{level_name}' as it's not selected for import.")
+                    continue
+
                 layer_def_uid = layer_instance['layerDefUid']
                 layer_definition = layer_defs.get(layer_def_uid)
                 if not layer_definition:
                     self.report({'WARNING'}, f"Layer definition UID {layer_def_uid} not found, skipping layer.")
                     continue
+                
 
                 layer_identifier = layer_instance.get('__identifier', f'Layer_{layer_def_uid}')
                 layer_type = layer_instance['__type']
@@ -239,7 +448,7 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
                 layer_tileset_uid = layer_instance.get('__tilesetDefUid') # Used by Tiles, AutoLayer, sometimes IntGrid
 
                 # --- Gather Tile Data ---
-                if layer_type in []:
+                if layer_type in ["Tiles", "AutoLayer"]: # Fixed: Was empty list
                     if layer_tileset_uid is None:
                         self.report({'WARNING'}, f"Layer '{layer_identifier}' of type '{layer_type}' has no tileset UID, skipping.")
                         continue
@@ -411,7 +620,7 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
                     bm.free() # Free bmesh even if object creation failed
 
                 # Increment Z offset for the next layer in this level
-                z_offset += layer_sep
+                z_offset -= layer_sep
 
         self.report({'INFO'}, "LDtk import finished.")
         return {'FINISHED'}
@@ -422,11 +631,17 @@ def menu_func_import(self, context):
     self.layout.operator(UTIL_OP_LoadLdtk.bl_idname, text=UTIL_OP_LoadLdtk.bl_label)
 
 def register():
+    bpy.utils.register_class(LDtkSelectionHelperBase)
+    bpy.utils.register_class(LDtkLayerInstanceImportProperties)
+    bpy.utils.register_class(LDtkLevelImportProperties)
     bpy.utils.register_class(UTIL_OP_LoadLdtk)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
 
 def unregister():
     bpy.utils.unregister_class(UTIL_OP_LoadLdtk)
+    bpy.utils.unregister_class(LDtkLevelImportProperties)
+    bpy.utils.unregister_class(LDtkLayerInstanceImportProperties)
+    bpy.utils.unregister_class(LDtkSelectionHelperBase)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
 
 if __name__ == "__main__":
