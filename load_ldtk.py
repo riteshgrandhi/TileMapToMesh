@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 bl_info = {
-    "name": "Load LDtk Tilemap (.ldtk/.ldtkl)",
+    "name": "Load LDtk Tilemap (.ldtk)",
     "author": "Gemini Code Assist",
     "version": (1, 0),
     "blender": (3, 0, 0),  # Minimum Blender version
-    "location": "File > Import > LDtk Tilemap (.ldtk/.ldtkl)",
-    "description": "Loads a tilemap from an LDtk file (.ldtk/.ldtkl)",
+    "location": "File > Import > LDtk Tilemap (.ldtk)",
+    "description": "Loads a tilemap from an LDtk file (.ldtk)",
     "warning": "",
     "doc_url": "",
     "category": "Import-Export",
@@ -171,14 +171,14 @@ class LDtkSelectionHelperBase(bpy.types.Operator):
 # --- Operator Class ---
 
 class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
-    """Loads a tilemap from an LDtk file (.ldtk/.ldtkl)"""
+    """Loads a tilemap from an LDtk file (.ldtk)"""
     bl_idname = "tilemaputil.ldtk_loader"
-    bl_label = "Load LDtk Tilemap (.ldtk/.ldtkl)"
+    bl_label = "Load LDtk Tilemap (.ldtk)"
     bl_options = {'REGISTER', 'UNDO'}
 
-    # Filter for .ldtk/.ldtkl files
+    # Filter for .ldtk files
     filter_glob: bpy.props.StringProperty(
-        default="*.ldtk;*.ldtkl",
+        default="*.ldtk",
         options={'HIDDEN'},
         maxlen=255,  # Max path length
     )
@@ -234,16 +234,34 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
                     if 'levels' in ldtk_data and ldtk_data['levels']:
                         for level_data in ldtk_data['levels']:
                             level_item = self.levels_to_import.add()
+                            # Identifier and IID always come from the main project file's level entry
                             level_item.name = level_data.get('identifier', f"Level_IID_{level_data.get('iid', 'UnknownIID')}")
                             level_item.level_iid = level_data.get('iid', '')
                             level_item.import_level = True
                             level_item.show_layers = False # Default to collapsed
 
+                            # Determine the source of layer instances (main file or external file)
+                            layer_instances_source_data = level_data
+                            external_rel_path = level_data.get('externalRelPath')
+
+                            if external_rel_path:
+                                abs_ext_level_path = get_absolute_path(self.filepath, external_rel_path)
+                                if abs_ext_level_path and os.path.exists(abs_ext_level_path):
+                                    try:
+                                        with open(abs_ext_level_path, 'r', encoding='utf-8') as ext_f:
+                                            external_level_json = json.load(ext_f)
+                                        layer_instances_source_data = external_level_json
+                                        self.report({'INFO'}, f"UI: Found external level data for '{level_item.name}' at '{external_rel_path}'")
+                                    except Exception as e_ext:
+                                        self.report({'WARNING'}, f"UI: Error parsing external level file '{external_rel_path}' for level '{level_item.name}': {e_ext}")
+                                else:
+                                    self.report({'WARNING'}, f"UI: External level file not found for '{level_item.name}': '{external_rel_path}' (resolved: {abs_ext_level_path})")
+
                             level_item.layer_instances.clear()
-                            for layer_instance_data in level_data.get('layerInstances', []):
+                            for layer_instance_data in layer_instances_source_data.get('layerInstances', []):
                                 layer_inst_item = level_item.layer_instances.add()
                                 layer_inst_item.name = layer_instance_data.get('__identifier', f"Type_{layer_instance_data.get('__type', 'UnknownType')}_DefUID_{layer_instance_data.get('layerDefUid','UnknownDef')}")
-                                layer_inst_item.instance_iid = layer_instance_data.get('iid', '')
+                                layer_inst_item.instance_iid = layer_instance_data.get('iid', '') # Layer instance IID
                                 layer_inst_item.layer_def_uid = str(layer_instance_data.get('layerDefUid', ''))
                                 layer_inst_item.import_layer = True
                         self.data_parsed_for_ui = True
@@ -304,15 +322,32 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
                 if 'levels' in ldtk_data_check and ldtk_data_check['levels']:
                     for level_data_exec in ldtk_data_check['levels']:
                         level_item_exec = self.levels_to_import.add()
+                        # Identifier and IID always come from the main project file's level entry
                         level_item_exec.name = level_data_exec.get('identifier', f"Level_IID_{level_data_exec.get('iid', 'UnknownIID')}")
                         level_item_exec.level_iid = level_data_exec.get('iid', '')
                         level_item_exec.import_level = True # Default to import
 
+                        # Determine the source of layer instances for fallback
+                        layer_instances_source_data_exec = level_data_exec
+                        external_rel_path_exec = level_data_exec.get('externalRelPath')
+
+                        if external_rel_path_exec:
+                            abs_ext_level_path_exec = get_absolute_path(self.filepath, external_rel_path_exec)
+                            if abs_ext_level_path_exec and os.path.exists(abs_ext_level_path_exec):
+                                try:
+                                    with open(abs_ext_level_path_exec, 'r', encoding='utf-8') as ext_f_exec:
+                                        external_level_json_exec = json.load(ext_f_exec)
+                                    layer_instances_source_data_exec = external_level_json_exec
+                                except Exception as e_ext_exec:
+                                    self.report({'WARNING'}, f"Fallback: Error parsing external level '{external_rel_path_exec}' for '{level_item_exec.name}': {e_ext_exec}")
+                            else:
+                                self.report({'WARNING'}, f"Fallback: External level file not found for '{level_item_exec.name}': '{external_rel_path_exec}'")
+
                         level_item_exec.layer_instances.clear()
-                        for layer_inst_data_exec in level_data_exec.get('layerInstances', []):
+                        for layer_inst_data_exec in layer_instances_source_data_exec.get('layerInstances', []):
                             layer_inst_item_exec = level_item_exec.layer_instances.add()
                             layer_inst_item_exec.name = layer_inst_data_exec.get('__identifier', f"Type_{layer_inst_data_exec.get('__type', 'UnknownType')}_DefUID_{layer_inst_data_exec.get('layerDefUid','UnknownDef')}")
-                            layer_inst_item_exec.instance_iid = layer_inst_data_exec.get('iid', '')
+                            layer_inst_item_exec.instance_iid = layer_inst_data_exec.get('iid', '') # Layer instance IID
                             layer_inst_item_exec.layer_def_uid = str(layer_inst_data_exec.get('layerDefUid', ''))
                             layer_inst_item_exec.import_layer = True # Default to import
                     self.data_parsed_for_ui = True # Mark as parsed for this context
@@ -381,32 +416,51 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
         level_count = len(ldtk_data.get('levels', []))
         z_offset = 0.0
 
-        for level_idx, level_data in enumerate(ldtk_data.get('levels', [])):
-            level_iid = level_data.get('iid')
+        for level_idx, level_data_ref in enumerate(ldtk_data.get('levels', [])): # level_data_ref is from the main LDtk file
+            level_iid = level_data_ref.get('iid')
             # Find this level in our selection list
             level_import_settings = next((lvl for lvl in self.levels_to_import if lvl.level_iid == level_iid), None)
 
             if not level_import_settings or not level_import_settings.import_level:
-                self.report({'INFO'}, f"Skipping level '{level_data.get('identifier', f'IID_{level_iid}')}' as it's not selected for import.")
+                self.report({'INFO'}, f"Skipping level '{level_data_ref.get('identifier', f'IID_{level_iid}')}' as it's not selected for import.")
                 continue
 
-            level_name = level_data.get('identifier', f'Level_{level_idx}')
+            # Use the identifier from the main project file for naming Blender objects
+            level_name = level_data_ref.get('identifier', f'Level_{level_idx}')
             self.report({'INFO'}, f"Processing {level_name} ({level_idx + 1}/{level_count})")
 
-            level_origin_x = level_data.get('worldX', 0)
-            level_origin_y = level_data.get('worldY', 0) # LDtk Y is down
+            # Determine the actual level data to use (from main file or external file)
+            actual_level_data = level_data_ref # Default to data from the main project file
+            external_rel_path = level_data_ref.get('externalRelPath')
+
+            if external_rel_path:
+                abs_external_level_path = get_absolute_path(filepath, external_rel_path)
+                if abs_external_level_path and os.path.exists(abs_external_level_path):
+                    try:
+                        with open(abs_external_level_path, 'r', encoding='utf-8') as ext_f:
+                            actual_level_data = json.load(ext_f) # Override with external data
+                        self.report({'INFO'}, f"Successfully loaded external level data for '{level_name}' from: {abs_external_level_path}")
+                    except Exception as e_ext_load:
+                        self.report({'ERROR'}, f"Failed to load or parse external level file '{abs_external_level_path}' for level '{level_name}': {e_ext_load}. Skipping this level.")
+                        continue
+                else:
+                    self.report({'ERROR'}, f"External level file not found for level '{level_name}': '{abs_external_level_path}' (from relPath: '{external_rel_path}'). Skipping this level.")
+                    continue
+
+            # Get world coordinates and layer instances from the actual_level_data
+            level_origin_x = actual_level_data.get('worldX', 0)
+            level_origin_y = actual_level_data.get('worldY', 0) # LDtk Y is down
 
             # Create a dictionary for quick lookup of layer instance import settings for this level
             current_level_layer_instance_settings = {
                 li.instance_iid: li for li in level_import_settings.layer_instances
             }
 
-            # Create a collection for the level
+            # Create a collection for the level, using the name from the main project file's reference
             level_collection = bpy.data.collections.new(level_name)
             context.scene.collection.children.link(level_collection)
 
-
-            layer_instances = level_data.get('layerInstances', [])
+            layer_instances = actual_level_data.get('layerInstances', [])
             if not layer_instances:
                 continue
 
@@ -498,7 +552,7 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
                 mesh_name = f"{level_name}_{layer_identifier}"
                 mesh = bpy.data.meshes.new(mesh_name)
                 obj = bpy.data.objects.new(mesh_name, mesh)
-                # obj.location = (level_origin_x, level_origin_y, z_offset)
+                obj.location = (0, 0, z_offset)
                 level_collection.objects.link(obj) # Link object to the level's collection
 
                 bm = bmesh.new()
@@ -531,10 +585,10 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
                     # LDtk px is top-left corner, Y-down
                     # Blender object space is typically Y-up or Z-up, origin at center or corner
                     # Let's map LDtk X to Blender X, LDtk Y to Blender -Y, origin at LDtk's top-left
-                    v1_coord = ((px[0] + level_origin_x) * scale / grid_size, -(px[1] + level_origin_y) * scale / grid_size, z_offset)
-                    v2_coord = ((px[0] + tile_w + level_origin_x) * scale / grid_size, -(px[1] + level_origin_y) * scale / grid_size, z_offset)
-                    v3_coord = ((px[0] + tile_w + level_origin_x) * scale / grid_size, -(px[1] + tile_h + level_origin_y) * scale / grid_size, z_offset)
-                    v4_coord = ((px[0] + level_origin_x) * scale / grid_size, -(px[1] + tile_h + level_origin_y) * scale / grid_size, z_offset)
+                    v1_coord = ((px[0] + level_origin_x) * scale / grid_size, -(px[1] + level_origin_y) * scale / grid_size, 0)
+                    v2_coord = ((px[0] + tile_w + level_origin_x) * scale / grid_size, -(px[1] + level_origin_y) * scale / grid_size, 0)
+                    v3_coord = ((px[0] + tile_w + level_origin_x) * scale / grid_size, -(px[1] + tile_h + level_origin_y) * scale / grid_size, 0)
+                    v4_coord = ((px[0] + level_origin_x) * scale / grid_size, -(px[1] + tile_h + level_origin_y) * scale / grid_size, 0)
 
                     coords = [v1_coord, v2_coord, v3_coord, v4_coord]
                     verts = []
