@@ -212,6 +212,58 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
         description="Internal: Path for which layers are currently loaded/processed"
     )
 
+    def _populate_levels_and_layers_for_import(self, main_ldtk_json_data, base_ldtk_filepath, context_prefix=""):
+        """
+        Populates `self.levels_to_import` based on the provided LDtk data.
+        Sets `self.data_parsed_for_ui` accordingly.
+        """
+        self.levels_to_import.clear()
+        self.data_parsed_for_ui = False # Assume failure until success
+
+        if not main_ldtk_json_data:
+            self.report({'WARNING'}, f"{context_prefix}No main LDtk data provided for populating options.")
+            return
+
+        if 'levels' in main_ldtk_json_data and main_ldtk_json_data['levels']:
+            for level_data_ref in main_ldtk_json_data['levels']: # level_data_ref is from main_ldtk_json_data
+                level_item = self.levels_to_import.add()
+                # Identifier and IID always come from the main project file's level entry
+                level_item.name = level_data_ref.get('identifier', f"Level_IID_{level_data_ref.get('iid', 'UnknownIID')}")
+                level_item.level_iid = level_data_ref.get('iid', '')
+                level_item.import_level = True # Default to import
+                level_item.show_layers = False # Default to collapsed for UI, harmless for execute
+
+                # Determine the source of layer instances (main file or external file)
+                layer_instances_source_data = level_data_ref # Default to data from the main project file
+                external_rel_path = level_data_ref.get('externalRelPath')
+
+                if external_rel_path:
+                    abs_ext_level_path = get_absolute_path(base_ldtk_filepath, external_rel_path)
+                    if abs_ext_level_path and os.path.exists(abs_ext_level_path):
+                        try:
+                            with open(abs_ext_level_path, 'r', encoding='utf-8') as ext_f:
+                                external_level_json = json.load(ext_f)
+                            layer_instances_source_data = external_level_json # Use this for layerInstances
+                            self.report({'INFO'}, f"{context_prefix}Found external level data for '{level_item.name}' at '{external_rel_path}'")
+                        except Exception as e_ext:
+                            self.report({'WARNING'}, f"{context_prefix}Error parsing external level file '{external_rel_path}' for level '{level_item.name}': {e_ext}")
+                            # If external parsing fails, layer_instances_source_data remains level_data_ref
+                    else:
+                        self.report({'WARNING'}, f"{context_prefix}External level file not found for '{level_item.name}': '{external_rel_path}' (resolved: {abs_ext_level_path})")
+                        # If external file not found, layer_instances_source_data remains level_data_ref
+
+                level_item.layer_instances.clear()
+                for layer_instance_data in layer_instances_source_data.get('layerInstances', []):
+                    layer_inst_item = level_item.layer_instances.add()
+                    layer_inst_item.name = layer_instance_data.get('__identifier', f"Type_{layer_instance_data.get('__type', 'UnknownType')}_DefUID_{layer_instance_data.get('layerDefUid','UnknownDef')}")
+                    layer_inst_item.instance_iid = layer_instance_data.get('iid', '') # Layer instance IID
+                    layer_inst_item.layer_def_uid = str(layer_instance_data.get('layerDefUid', ''))
+                    layer_inst_item.import_layer = True # Default to import
+            self.data_parsed_for_ui = True
+        else:
+            # self.data_parsed_for_ui remains False
+            self.report({'INFO'}, f"{context_prefix}No levels found in the provided LDtk data.")
+
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
@@ -222,56 +274,20 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
 
         # Logic to update layer list if filepath changes
         if self.filepath != self.processed_filepath:
-            self.levels_to_import.clear()
-            self.data_parsed_for_ui = False
-            self.processed_filepath = self.filepath
+            self.levels_to_import.clear() # Clear before attempting to parse
+            self.data_parsed_for_ui = False # Reset flag
 
             if self.filepath and os.path.exists(self.filepath):
                 try:
                     with open(self.filepath, 'r', encoding='utf-8') as f:
-                        ldtk_data = json.load(f)
-
-                    if 'levels' in ldtk_data and ldtk_data['levels']:
-                        for level_data in ldtk_data['levels']:
-                            level_item = self.levels_to_import.add()
-                            # Identifier and IID always come from the main project file's level entry
-                            level_item.name = level_data.get('identifier', f"Level_IID_{level_data.get('iid', 'UnknownIID')}")
-                            level_item.level_iid = level_data.get('iid', '')
-                            level_item.import_level = True
-                            level_item.show_layers = False # Default to collapsed
-
-                            # Determine the source of layer instances (main file or external file)
-                            layer_instances_source_data = level_data
-                            external_rel_path = level_data.get('externalRelPath')
-
-                            if external_rel_path:
-                                abs_ext_level_path = get_absolute_path(self.filepath, external_rel_path)
-                                if abs_ext_level_path and os.path.exists(abs_ext_level_path):
-                                    try:
-                                        with open(abs_ext_level_path, 'r', encoding='utf-8') as ext_f:
-                                            external_level_json = json.load(ext_f)
-                                        layer_instances_source_data = external_level_json
-                                        self.report({'INFO'}, f"UI: Found external level data for '{level_item.name}' at '{external_rel_path}'")
-                                    except Exception as e_ext:
-                                        self.report({'WARNING'}, f"UI: Error parsing external level file '{external_rel_path}' for level '{level_item.name}': {e_ext}")
-                                else:
-                                    self.report({'WARNING'}, f"UI: External level file not found for '{level_item.name}': '{external_rel_path}' (resolved: {abs_ext_level_path})")
-
-                            level_item.layer_instances.clear()
-                            for layer_instance_data in layer_instances_source_data.get('layerInstances', []):
-                                layer_inst_item = level_item.layer_instances.add()
-                                layer_inst_item.name = layer_instance_data.get('__identifier', f"Type_{layer_instance_data.get('__type', 'UnknownType')}_DefUID_{layer_instance_data.get('layerDefUid','UnknownDef')}")
-                                layer_inst_item.instance_iid = layer_instance_data.get('iid', '') # Layer instance IID
-                                layer_inst_item.layer_def_uid = str(layer_instance_data.get('layerDefUid', ''))
-                                layer_inst_item.import_layer = True
-                        self.data_parsed_for_ui = True
-                    else:
-                        self.data_parsed_for_ui = False
+                        ldtk_data_for_ui = json.load(f)
+                    # Call the new helper method to populate levels_to_import
+                    self._populate_levels_and_layers_for_import(ldtk_data_for_ui, self.filepath, context_prefix="UI: ")
                 except Exception as e:
                     self.report({'WARNING'}, f"Error parsing LDtk for UI: {e}")
-                    self.data_parsed_for_ui = False
-            else:
-                self.data_parsed_for_ui = False
+                    # self.data_parsed_for_ui remains False, levels_to_import is already cleared
+            
+            self.processed_filepath = self.filepath # Mark as processed for this path
 
         # Display layer selection UI
         if self.data_parsed_for_ui and self.levels_to_import:
@@ -312,56 +328,23 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
 
         self.report({'INFO'}, f"Loading LDtk file: {filepath}")
 
-        # Fallback parsing if draw() didn't populate (e.g., script execution without UI)
-        if not self.data_parsed_for_ui and self.filepath and os.path.exists(self.filepath):
-            self.report({'INFO'}, "UI data not parsed, attempting fallback parsing for execute.")
-            self.levels_to_import.clear()
-            try:
-                with open(self.filepath, 'r', encoding='utf-8') as f:
-                    ldtk_data_check = json.load(f)
-                if 'levels' in ldtk_data_check and ldtk_data_check['levels']:
-                    for level_data_exec in ldtk_data_check['levels']:
-                        level_item_exec = self.levels_to_import.add()
-                        # Identifier and IID always come from the main project file's level entry
-                        level_item_exec.name = level_data_exec.get('identifier', f"Level_IID_{level_data_exec.get('iid', 'UnknownIID')}")
-                        level_item_exec.level_iid = level_data_exec.get('iid', '')
-                        level_item_exec.import_level = True # Default to import
+        # Ensure levels_to_import is populated if UI didn't run,
+        # or if the filepath changed since UI was last drawn.
+        # The ldtk_data loaded above is used for this.
+        if not self.data_parsed_for_ui or self.processed_filepath != self.filepath:
+            self.report({'INFO'}, "Populating import options from LDtk data for execution.")
+            # Use the ldtk_data already loaded for the import process
+            self._populate_levels_and_layers_for_import(ldtk_data, self.filepath, context_prefix="Execute: ")
+            if self.data_parsed_for_ui: # Only update processed_filepath if parsing was successful
+                self.processed_filepath = self.filepath
 
-                        # Determine the source of layer instances for fallback
-                        layer_instances_source_data_exec = level_data_exec
-                        external_rel_path_exec = level_data_exec.get('externalRelPath')
-
-                        if external_rel_path_exec:
-                            abs_ext_level_path_exec = get_absolute_path(self.filepath, external_rel_path_exec)
-                            if abs_ext_level_path_exec and os.path.exists(abs_ext_level_path_exec):
-                                try:
-                                    with open(abs_ext_level_path_exec, 'r', encoding='utf-8') as ext_f_exec:
-                                        external_level_json_exec = json.load(ext_f_exec)
-                                    layer_instances_source_data_exec = external_level_json_exec
-                                except Exception as e_ext_exec:
-                                    self.report({'WARNING'}, f"Fallback: Error parsing external level '{external_rel_path_exec}' for '{level_item_exec.name}': {e_ext_exec}")
-                            else:
-                                self.report({'WARNING'}, f"Fallback: External level file not found for '{level_item_exec.name}': '{external_rel_path_exec}'")
-
-                        level_item_exec.layer_instances.clear()
-                        for layer_inst_data_exec in layer_instances_source_data_exec.get('layerInstances', []):
-                            layer_inst_item_exec = level_item_exec.layer_instances.add()
-                            layer_inst_item_exec.name = layer_inst_data_exec.get('__identifier', f"Type_{layer_inst_data_exec.get('__type', 'UnknownType')}_DefUID_{layer_inst_data_exec.get('layerDefUid','UnknownDef')}")
-                            layer_inst_item_exec.instance_iid = layer_inst_data_exec.get('iid', '') # Layer instance IID
-                            layer_inst_item_exec.layer_def_uid = str(layer_inst_data_exec.get('layerDefUid', ''))
-                            layer_inst_item_exec.import_layer = True # Default to import
-                    self.data_parsed_for_ui = True # Mark as parsed for this context
-                else:
-                    self.data_parsed_for_ui = False
-            except Exception as e:
-                self.report({'WARNING'}, f"Fallback layer parsing failed: {e}")
-                self.data_parsed_for_ui = False
-
-        if not self.data_parsed_for_ui: # Check after potential fallback
-            self.report({'ERROR'}, f"Could not parse levels/layers from: {filepath}. Aborting.")
+        if not self.data_parsed_for_ui: # Check after attempting to populate
+            self.report({'ERROR'}, f"Could not determine levels/layers to import from: {filepath}. Aborting.")
             return {'CANCELLED'}
+        
+        # If _populate_levels_and_layers_for_import found no levels in the data structure.
         if not self.levels_to_import:
-            self.report({'INFO'}, "No levels found in LDtk file. Nothing to import.")
+            self.report({'INFO'}, "No levels found in LDtk data structure. Nothing to import.")
             return {'FINISHED'}
 
         # --- Data Storage ---
