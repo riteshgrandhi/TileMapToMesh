@@ -397,9 +397,9 @@ class UTIL_OP_LoadLdtk(bpy.types.Operator, ImportHelper):
         # --- Process Levels ---
         self.report({'INFO'}, "Processing levels...")
         level_count = len(ldtk_data.get('levels', []))
-        z_offset = 0.0
 
         for level_idx, level_data_ref in enumerate(ldtk_data.get('levels', [])): # level_data_ref is from the main LDtk file
+            z_offset = 0.0
             level_iid = level_data_ref.get('iid')
             # Find this level in our selection list
             level_import_settings = next((lvl for lvl in self.levels_to_import if lvl.level_iid == level_iid), None)
